@@ -71,11 +71,27 @@ jobs:
           # if we started right on top of a boundary, run to the following one
           if [ $(( END - NOW )) -lt 300 ]; then END=$(( END + 1800 )); fi
           echo "polling until $(date -u -d @${END} '+%H:%M:%S') UTC  ($(( (END-NOW)/60 )) min)"
+          git config user.name  "github-actions"
+          git config user.email "actions@github.com"
+
           N=0
           while [ "$(date +%s)" -lt "$END" ]; do
             N=$((N+1))
             echo "--- poll $N ---"
             python watch.py || echo "poll failed, continuing"
+
+            # commit immediately after anything is posted, so a crash or a
+            # cancelled run cannot cause the same items to be sent again
+            if [ -f .posted ]; then
+              git fetch origin main -q
+              git show origin/main:seen.json > /tmp/remote.json 2>/dev/null || echo "[]" > /tmp/remote.json
+              python3 merge_state.py /tmp/remote.json
+              git reset --soft origin/main -q
+              git add seen.json
+              git diff --staged --quiet || { git commit -q -m "state"; git push -q origin HEAD:main && echo "  state pushed"; }
+              rm -f .posted
+            fi
+
             sleep 60
           done
           echo "finished after $N polls"
@@ -84,25 +100,39 @@ jobs:
         if: failure()
         run: docker logs rsshub || true
 
-      # seen.json is the only file we write. If a previous run pushed a
-      # different version, ours is newer, so take ours and force it. This
-      # avoids the rebase conflict that leaves the runner on a detached HEAD.
+      # Persist state.
+      #
+      # Previous version used "git rebase --strategy-option=ours", which in a
+      # rebase means the UPSTREAM side - so it threw away the new state and
+      # kept the old one. That is why the same posts were sent repeatedly.
+      #
+      # This version unions our ids with whatever is on the remote, so no
+      # state can ever be lost, then commits on top of the remote tip.
       - name: Save state
         if: always()
         run: |
           git config user.name  "github-actions"
           git config user.email "actions@github.com"
-          git fetch origin main
-          git checkout main || git checkout -B main
-          git checkout --ours seen.json 2>/dev/null || true
-          git add seen.json
-          git diff --staged --quiet && echo "no change" && exit 0
-          git commit -m "state"
-          for i in 1 2 3; do
-            git push origin main && exit 0
-            echo "push $i failed, rebasing onto latest"
+
+          for attempt in 1 2 3; do
             git fetch origin main
-            git rebase --strategy-option=ours origin/main || git rebase --abort
+
+            # merge remote ids with ours - union, newest kept, capped
+            git show origin/main:seen.json > /tmp/remote.json 2>/dev/null || echo "[]" > /tmp/remote.json
+            python3 merge_state.py /tmp/remote.json
+
+            git reset --soft origin/main
+            git add seen.json
+            if git diff --staged --quiet; then
+              echo "no state change"
+              exit 0
+            fi
+            git commit -m "state"
+            if git push origin HEAD:main; then
+              echo "state saved"
+              exit 0
+            fi
+            echo "push attempt $attempt failed, retrying"
             sleep 3
           done
-          echo "could not push state after 3 tries"
+          echo "WARNING: could not save state - next run may repost"
