@@ -111,22 +111,55 @@ def parse_feed(raw):
     return items
 
 
-def post_discord(item, label):
-    """Send one item to Discord as an embed."""
-    body = item["desc"] or item["title"]
-    if len(body) > 1800:
-        body = body[:1797] + "..."
+# How posts look in Discord:
+#   "embed"  - coloured card, clickable title, timestamp   (default)
+#   "plain"  - just the text and the link, no card
+#   "compact"- one line: text + link
+STYLE = os.environ.get("POST_STYLE", "embed").strip().lower()
 
-    payload = {
-        "username": "ICT Watch",
-        "embeds": [{
-            "title": (item["title"] or "New post")[:250],
-            "description": body,
-            "url": item["link"],
-            "color": 0x1DA1F2,
-            "footer": {"text": label},
-        }],
+
+def build_payload(item, label):
+    """Build the Discord message body according to STYLE."""
+    # RSSHub puts the tweet text in BOTH title and description, and prefixes
+    # the title with the display name. Strip that so it is not shown twice.
+    text = item["desc"] or item["title"]
+    title = item["title"]
+    for sep in (": ",):
+        if sep in title and title.split(sep, 1)[1][:40] in text:
+            title = title.split(sep, 1)[0]      # keep just the author name
+            break
+    if len(text) > 1900:
+        text = text[:1897] + "..."
+
+    if STYLE == "plain":
+        return {"username": "ICT Watch",
+                "content": f"**{title}**\n{text}\n{item['link']}"[:1990]}
+
+    if STYLE == "compact":
+        return {"username": "ICT Watch",
+                "content": f"{text} {item['link']}"[:1990]}
+
+    # default: embed, with the text shown once and an explicit visible link.
+    # An embed with a url but no title is clickable, but nothing on screen
+    # tells you that - so a "View on X" line is appended to the description.
+    desc = text
+    if item["link"]:
+        desc = f"{text}\n\n[**View on X →**]({item['link']})"
+
+    embed = {
+        "description": desc[:4000],
+        "url": item["link"],
+        "color": 0x1DA1F2,
+        "author": {"name": title or label, "url": item["link"]},
     }
+    if item.get("date"):
+        embed["footer"] = {"text": item["date"]}
+    return {"username": "ICT Watch", "embeds": [embed]}
+
+
+def post_discord(item, label):
+    """Send one item to Discord."""
+    payload = build_payload(item, label)
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         WEBHOOK, data=data,
