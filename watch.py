@@ -130,7 +130,13 @@ def post_discord(item, label):
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         WEBHOOK, data=data,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            # Cloudflare fronts discord.com and rejects the default python
+            # urllib agent with 403 / error code 1010. A normal UA fixes it.
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        },
         method="POST",
     )
     try:
@@ -194,16 +200,19 @@ def main():
 
         # oldest first so Discord reads chronologically
         for item in reversed(fresh):
-            new_ids.append(item["id"])
             if first_run:
+                new_ids.append(item["id"])
                 continue
             if sent >= MAX_POST_PER_RUN:
-                log("  hit per-run cap, remainder marked seen")
-                continue
+                log("  hit per-run cap, remainder left for next poll")
+                break
             if post_discord(item, label):
+                new_ids.append(item["id"])     # only mark seen once delivered
                 sent += 1
                 log(f"  posted: {item['title'][:60]}")
-                time.sleep(1.0)      # stay under Discord's webhook limit
+                time.sleep(1.0)
+            else:
+                log(f"  NOT marked seen, will retry: {item['title'][:50]}")
 
     # persist state
     combined = list(seen) + new_ids
