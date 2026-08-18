@@ -28,7 +28,7 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +59,7 @@ jobs:
           done
           echo "RSSHub failed to start"; docker logs rsshub; exit 1
 
-      - name: Poll every 60s for 55 minutes
+      - name: Poll every 60s until the next boundary
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           # embed | plain | compact
@@ -70,6 +70,10 @@ jobs:
           END=$(( ( NOW / 1800 + 1 ) * 1800 - 120 ))
           # if we started right on top of a boundary, run to the following one
           if [ $(( END - NOW )) -lt 300 ]; then END=$(( END + 1800 )); fi
+          # hard cap: never poll for more than 30 minutes, so image pull +
+          # boot + state save can never push the job past its timeout
+          MAXEND=$(( NOW + 1800 ))
+          if [ "$END" -gt "$MAXEND" ]; then END=$MAXEND; fi
           echo "polling until $(date -u -d @${END} '+%H:%M:%S') UTC  ($(( (END-NOW)/60 )) min)"
           git config user.name  "github-actions"
           git config user.email "actions@github.com"
