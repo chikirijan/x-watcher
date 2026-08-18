@@ -52,6 +52,8 @@ jobs:
       - name: Poll every 60s for 55 minutes
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          # embed | plain | compact
+          POST_STYLE: embed
         run: |
           END=$(( $(date +%s) + 3000 ))     # 50 minutes - leaves a clear gap
           N=0
