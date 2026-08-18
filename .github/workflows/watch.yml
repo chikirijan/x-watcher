@@ -1,11 +1,16 @@
 name: X to Discord
 
-# Runs hourly. Each run starts RSSHub once, then polls it every 60 seconds
-# for ~55 minutes before exiting. This gives 1-minute alerts using a single
-# job, so there is no state-file conflict and RSSHub only boots once.
+# Runs on the hour and half hour. Each run boots RSSHub once, then polls it
+# every 60 seconds until 2 minutes before the NEXT boundary, then exits.
+#
+# Ending on a wall-clock boundary rather than after a fixed duration means a
+# manually triggered run still finishes in time for the next scheduled one,
+# so a manual run can no longer knock the schedule out of sync.
+#
+# Gap between runs: about 2 minutes of clock, plus ~40s container boot.
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0,30 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -18,7 +23,7 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 35
 
     steps:
       - uses: actions/checkout@v4
@@ -55,7 +60,12 @@ jobs:
           # embed | plain | compact
           POST_STYLE: embed
         run: |
-          END=$(( $(date +%s) + 3000 ))     # 50 minutes - leaves a clear gap
+          NOW=$(date +%s)
+          # next :00 or :30 wall-clock boundary, minus a 2 minute buffer
+          END=$(( ( NOW / 1800 + 1 ) * 1800 - 120 ))
+          # if we started right on top of a boundary, run to the following one
+          if [ $(( END - NOW )) -lt 300 ]; then END=$(( END + 1800 )); fi
+          echo "polling until $(date -u -d @${END} '+%H:%M:%S') UTC  ($(( (END-NOW)/60 )) min)"
           N=0
           while [ "$(date +%s)" -lt "$END" ]; do
             N=$((N+1))
