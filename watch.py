@@ -255,6 +255,13 @@ def main():
 
     log(f"done - {sent} posted, {len(combined)} ids tracked")
 
+    # tell the shell loop whether to commit state right away
+    flag = STATE_FILE.parent / ".posted"
+    if sent:
+        flag.write_text(str(sent))
+    elif flag.exists():
+        flag.unlink()
+
 
 if __name__ == "__main__":
     main()
