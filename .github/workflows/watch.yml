@@ -1,16 +1,21 @@
 name: X to Discord
 
-# Runs on the hour and half hour. Each run boots RSSHub once, then polls it
-# every 60 seconds until 2 minutes before the NEXT boundary, then exits.
+# The cron fires every 10 minutes, but a run lasts ~30 minutes. That is
+# deliberate.
 #
-# Ending on a wall-clock boundary rather than after a fixed duration means a
-# manually triggered run still finishes in time for the next scheduled one,
-# so a manual run can no longer knock the schedule out of sync.
+# GitHub's scheduler silently drops triggers under load - that is what caused
+# the 12:30 / 13:00 / 13:30 / 14:00 runs to never appear. Firing 6 times an
+# hour instead of 2 means a dropped trigger no longer creates a gap.
 #
-# Gap between runs: about 2 minutes of clock, plus ~40s container boot.
+# The concurrency group absorbs the extras: while a run is in progress the
+# next trigger sits as "pending", and any further trigger replaces that
+# pending one. So there is never more than one running plus one waiting, and
+# the waiting one starts the instant the current run ends.
+#
+# Net effect: near-continuous coverage, self-healing after a dropped trigger.
 on:
   schedule:
-    - cron: '0,30 * * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 permissions:
