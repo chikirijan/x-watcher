@@ -18,7 +18,7 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 55
 
     steps:
       - uses: actions/checkout@v4
@@ -53,7 +53,7 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          END=$(( $(date +%s) + 3300 ))     # 55 minutes
+          END=$(( $(date +%s) + 3000 ))     # 50 minutes - leaves a clear gap
           N=0
           while [ "$(date +%s)" -lt "$END" ]; do
             N=$((N+1))
@@ -67,12 +67,25 @@ jobs:
         if: failure()
         run: docker logs rsshub || true
 
+      # seen.json is the only file we write. If a previous run pushed a
+      # different version, ours is newer, so take ours and force it. This
+      # avoids the rebase conflict that leaves the runner on a detached HEAD.
       - name: Save state
         if: always()
         run: |
           git config user.name  "github-actions"
           git config user.email "actions@github.com"
-          git add seen.json 2>/dev/null || true
-          git diff --staged --quiet || git commit -m "state"
-          git pull --rebase --autostash || true
-          git push || true
+          git fetch origin main
+          git checkout main || git checkout -B main
+          git checkout --ours seen.json 2>/dev/null || true
+          git add seen.json
+          git diff --staged --quiet && echo "no change" && exit 0
+          git commit -m "state"
+          for i in 1 2 3; do
+            git push origin main && exit 0
+            echo "push $i failed, rebasing onto latest"
+            git fetch origin main
+            git rebase --strategy-option=ours origin/main || git rebase --abort
+            sleep 3
+          done
+          echo "could not push state after 3 tries"
