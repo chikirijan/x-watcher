@@ -10,6 +10,7 @@ duration of the job and then destroys. No hosting required.
 """
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -67,6 +68,39 @@ def strip_html(s):
     return " ".join(txt.split())
 
 
+def extract_media(html):
+    """Pull image / video / gif URLs out of the raw description HTML.
+
+    RSSHub embeds tweet media as <img src>, and video or gif as <video>
+    with a poster attribute plus a <source src>. strip_html() throws all of
+    that away, so it has to be captured before the tags are removed.
+    """
+    def clean(u):
+        # URLs inside XML are entity-encoded; Discord needs them decoded or
+        # it cannot fetch the image.
+        for a, b in (("&amp;", "&"), ("&quot;", ""), ("&#39;", ""),
+                     ("&lt;", "<"), ("&gt;", ">")):
+            u = u.replace(a, b)
+        # twitter serves several sizes - ask for the big one
+        u = re.sub(r"([?&])name=(small|thumb|medium|900x900)\b", r"\1name=large", u)
+        return u.strip()
+
+    imgs, videos = [], []
+    for m in re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', html, re.I):
+        u = clean(m.group(1))
+        if u and u not in imgs:
+            imgs.append(u)
+    for m in re.finditer(r'<video[^>]+poster=["\']([^"\']+)["\']', html, re.I):
+        u = clean(m.group(1))
+        if u and u not in imgs:
+            imgs.append(u)
+    for m in re.finditer(r'<source[^>]+src=["\']([^"\']+)["\']', html, re.I):
+        u = clean(m.group(1))
+        if u and u not in videos:
+            videos.append(u)
+    return imgs[:4], videos[:1]
+
+
 def parse_feed(raw):
     """Return a list of dicts from an RSS 2.0 body."""
     items = []
@@ -84,12 +118,16 @@ def parse_feed(raw):
         guid = get("guid") or get("link")
         if not guid:
             continue
+        raw_desc = get("description")
+        imgs, vids = extract_media(raw_desc)
         items.append({
             "id": guid,
             "title": strip_html(get("title")),
             "link": get("link"),
-            "desc": strip_html(get("description"))[:1500],
+            "desc": strip_html(raw_desc)[:1500],
             "date": get("pubDate"),
+            "images": imgs,
+            "videos": vids,
         })
 
     # Atom fallback
@@ -107,6 +145,8 @@ def parse_feed(raw):
                 "link": linkel.get("href") if linkel is not None else "",
                 "desc": "",
                 "date": "",
+                "images": [],
+                "videos": [],
             })
     return items
 
@@ -131,13 +171,19 @@ def build_payload(item, label):
     if len(text) > 1900:
         text = text[:1897] + "..."
 
+    media = ""
+    for u in (item.get("images") or [])[:4]:
+        media += f"\n{u}"
+    for u in (item.get("videos") or [])[:1]:
+        media += f"\n{u}"
+
     if STYLE == "plain":
         return {"username": "ICT Watch",
-                "content": f"**{title}**\n{text}\n{item['link']}"[:1990]}
+                "content": f"**{title}**\n{text}\n{item['link']}{media}"[:1990]}
 
     if STYLE == "compact":
         return {"username": "ICT Watch",
-                "content": f"{text} {item['link']}"[:1990]}
+                "content": f"{text} {item['link']}{media}"[:1990]}
 
     # default: embed, with the text shown once and an explicit visible link.
     # An embed with a url but no title is clickable, but nothing on screen
@@ -145,6 +191,13 @@ def build_payload(item, label):
     desc = text
     if item["link"]:
         desc = f"{text}\n\n[**View on X →**]({item['link']})"
+
+    imgs = item.get("images") or []
+    vids = item.get("videos") or []
+
+    # A video cannot play inside an embed, so link it in the text instead.
+    if vids:
+        desc += f"\n[**Video/GIF →**]({vids[0]})"
 
     embed = {
         "description": desc[:4000],
@@ -154,7 +207,16 @@ def build_payload(item, label):
     }
     if item.get("date"):
         embed["footer"] = {"text": item["date"]}
-    return {"username": "ICT Watch", "embeds": [embed]}
+    if imgs:
+        embed["image"] = {"url": imgs[0]}
+
+    embeds = [embed]
+    # Discord stacks up to 4 images into one gallery when several embeds
+    # share the same url. Extra embeds carry only the image.
+    for extra in imgs[1:4]:
+        embeds.append({"url": item["link"], "image": {"url": extra}})
+
+    return {"username": "ICT Watch", "embeds": embeds}
 
 
 def post_discord(item, label):
